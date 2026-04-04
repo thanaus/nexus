@@ -46,15 +46,13 @@ func newSyncCmd() *cobra.Command {
 		Short:   "Initialize a synchronization job",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(3)(cmd, args); err != nil {
-				return usageError(cmd, fmt.Errorf("requires <source> <destination> <nats>"))
+				return fmt.Errorf("requires <source> <destination> <nats>")
 			}
 			if strings.TrimSpace(args[2]) == "" {
-				return usageError(cmd, fmt.Errorf("<nats> must be a non-empty broker URL"))
+				return fmt.Errorf("<nats> must be a non-empty broker URL")
 			}
 			return nil
 		},
-		SilenceUsage:  true,
-		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, args []string) error {
 			return runSync(args[0], args[1], strings.TrimSpace(args[2]))
 		},

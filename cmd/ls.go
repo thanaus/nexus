@@ -81,12 +81,12 @@ func newLsCmd() *cobra.Command {
 
 			if jobMode {
 				if len(args) > 1 {
-					return usageError(cmd, fmt.Errorf("accepts at most one directory argument in job mode; received %d", len(args)))
+					return fmt.Errorf("accepts at most one directory argument in job mode; received %d", len(args))
 				}
 				return nil
 			}
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
-				return usageError(cmd, fmt.Errorf("requires <directory> (unless using --nats and --token)"))
+				return fmt.Errorf("requires <directory> (unless using --nats and --token)")
 			}
 			return nil
 		},
@@ -95,15 +95,13 @@ func newLsCmd() *cobra.Command {
 			hasNats := strings.TrimSpace(natsURL) != ""
 			hasToken := strings.TrimSpace(token) != ""
 			if hasParquet && (hasNats || hasToken) {
-				return usageError(cmd, fmt.Errorf("flags -p/--parquet cannot be used with --nats or --token"))
+				return fmt.Errorf("flags -p/--parquet cannot be used with --nats or --token")
 			}
 			if hasNats != hasToken {
-				return usageError(cmd, fmt.Errorf("--nats and --token must be used together (after nexus sync)"))
+				return fmt.Errorf("--nats and --token must be used together (after nexus sync)")
 			}
 			return nil
 		},
-		SilenceUsage:  true,
-		SilenceErrors: true,
 		RunE: func(_ *cobra.Command, args []string) error {
 			var dir string
 			if len(args) > 0 {
