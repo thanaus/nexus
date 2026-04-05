@@ -207,13 +207,16 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 	jobs := make(chan FileEntry, workers*4)
 	g, ctx := errgroup.WithContext(ctx)
 
-	var (
-		results  chan FileRecord
-		workerWg sync.WaitGroup
-	)
-	if parquetOut != "" {
-		results = make(chan FileRecord, workers*4)
+	// results is non-nil only when output is needed (parquet or NATS).
+	// It is always closed by the dedicated closer goroutine below,
+	// which waits for all workers to finish via workerWg — no implicit
+	// invariant between results and any other variable.
+	var results chan FileRecord
+	var workerWg sync.WaitGroup
 
+	switch {
+	case parquetOut != "":
+		results = make(chan FileRecord, workers*4)
 		g.Go(func() error {
 			f, err := os.Create(parquetOut)
 			if err != nil {
@@ -255,12 +258,7 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 			return nil
 		})
 
-		g.Go(func() error {
-			workerWg.Wait()
-			close(results)
-			return nil
-		})
-	} else if jobNatsMode {
+	case jobNatsMode:
 		results = make(chan FileRecord, workers*4)
 		g.Go(func() error {
 			for rec := range results {
@@ -283,15 +281,28 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 			}
 			return nil
 		})
-
-		g.Go(func() error {
-			workerWg.Wait()
-			close(results)
-			return nil
-		})
 	}
 
+	// Closer goroutine: always registered in the errgroup.
+	// When results is nil it returns immediately; otherwise it waits for all
+	// workers to finish before closing the channel so the sink goroutine above
+	// can drain cleanly.
+	g.Go(func() error {
+		workerWg.Wait()
+		if results != nil {
+			close(results)
+		}
+		return nil
+	})
+
+	// Progress reporter runs outside the errgroup — it has no error to return
+	// and must not block g.Wait(). stopProgress closes the channel exactly once
+	// via sync.Once so the caller never panics regardless of the error path.
 	scanDone := make(chan struct{})
+	var stopOnce sync.Once
+	stopProgress := func() { stopOnce.Do(func() { close(scanDone) }) }
+	defer stopProgress() // safety net: always stop the reporter when runLs returns
+
 	go func() {
 		printProgress := func(t time.Time, rate, cpuPct float64) {
 			line := fmt.Sprintf("\r\033[K[%s] %s objects",
@@ -336,8 +347,11 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 		}
 	}()
 
+	// Workers: tracked by workerWg so the closer goroutine knows when to shut
+	// down the results channel. They are also in the errgroup so any error
+	// propagates to g.Wait().
+	workerWg.Add(workers)
 	for range workers {
-		workerWg.Add(1)
 		g.Go(func() error {
 			defer workerWg.Done()
 			for {
@@ -409,11 +423,11 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 	})
 
 	waitErr := g.Wait()
+	stopProgress() // stop the reporter as soon as all goroutines have finished
+
 	if waitErr != nil && !errors.Is(waitErr, context.Canceled) {
-		close(scanDone)
 		return waitErr
 	}
-	close(scanDone)
 
 	if jobNatsMode && ctx.Err() == nil && waitErr == nil {
 		if _, err := kv.Put(kvKeyLsDone, []byte("true")); err != nil {
