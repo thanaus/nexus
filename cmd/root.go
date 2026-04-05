@@ -51,42 +51,24 @@ func NewRootCmd() *cobra.Command {
 // would accumulate duplicate initialisers. PersistentPreRunE is stored on the
 // Command instance itself and is therefore fully isolated per call.
 //
-// Note: Cobra does not chain PersistentPreRunE across parent/child by default
-// (EnableTraverseRunHooks is false). Sub-commands that need their own
-// PersistentPreRunE must call initConfig() explicitly, or EnableTraverseRunHooks
-// must be set to true before NewRootCmd() is called.
+// EnableTraverseRunHooks is set to true so that Cobra chains PersistentPreRunE
+// across parent/child commands. Without it, a sub-command that defines its own
+// PersistentPreRunE would silently skip the root hook (initConfig). The flag is
+// a package-level bool in Cobra — setting it here is idempotent and safe across
+// parallel tests because all callers set it to the same value.
 func setupRootCommand(root *cobra.Command) {
+	cobra.EnableTraverseRunHooks = true
 	root.AddGroup(
 		&cobra.Group{ID: groupCore, Title: "Core Commands:"},
 		&cobra.Group{ID: groupOther, Title: "Other Commands:"},
 	)
-	root.SetHelpCommand(newHelpCmd(root))
+	// SetHelpCommandGroupID places the auto-generated help command in the
+	// "Other Commands:" section. No custom help command is needed: Cobra's
+	// default already handles sub-command lookup and writer propagation via
+	// the parent chain (OutOrStdout walks up to root automatically).
+	root.SetHelpCommandGroupID(groupOther)
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		return initConfig()
-	}
-}
-
-// newHelpCmd returns the custom help command. It receives root as a parameter
-// so it can delegate help rendering without relying on a package-level variable.
-func newHelpCmd(root *cobra.Command) *cobra.Command {
-	return &cobra.Command{
-		Use:     "help [command]",
-		Short:   "Show help for a command",
-		GroupID: groupOther,
-		RunE: func(c *cobra.Command, args []string) error {
-			root.SetOut(c.OutOrStdout())
-			root.SetErr(c.ErrOrStderr())
-			if len(args) == 0 {
-				return root.Help()
-			}
-			child, _, err := root.Find(args)
-			if err != nil {
-				return err
-			}
-			child.SetOut(c.OutOrStdout())
-			child.SetErr(c.ErrOrStderr())
-			return child.Help()
-		},
 	}
 }
 

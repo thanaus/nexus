@@ -70,13 +70,9 @@ func newLsCmd() *cobra.Command {
 		Long: "With --nats and --token (after nexus sync), [directory] is optional: the path from the job is used; " +
 			"you can pass [directory] to override it. Otherwise [directory] is required.",
 		Args: func(cmd *cobra.Command, args []string) error {
-			hasNats := strings.TrimSpace(natsURL) != ""
-			hasToken := strings.TrimSpace(token) != ""
-			if hasNats != hasToken {
-				return fmt.Errorf("--nats and --token must be used together (after nexus sync)")
-			}
-			jobMode := hasNats
-
+			// MarkFlagsRequiredTogether("nats", "token") already guarantees that
+			// both or neither are set before Args is called — no need to re-check.
+			jobMode := strings.TrimSpace(natsURL) != ""
 			if jobMode {
 				if len(args) > 1 {
 					return fmt.Errorf("accepts at most one directory argument in job mode; received %d", len(args))
