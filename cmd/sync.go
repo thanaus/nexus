@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,8 +54,10 @@ func newSyncCmd() *cobra.Command {
 			}
 			return nil
 		},
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runSync(args[0], args[1], strings.TrimSpace(args[2]))
+		// cmd is no longer ignored: we forward cmd.Context() so the signal-aware
+		// context installed by setupRootCommand propagates into runSync.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSync(cmd.Context(), args[0], args[1], strings.TrimSpace(args[2]))
 		},
 		Example: fmt.Sprintf(`  # Initialise a default synchronization job
   %s sync /path/to/source /path/to/destination nats://localhost:4222`,
@@ -64,7 +67,8 @@ func newSyncCmd() *cobra.Command {
 	return cmd
 }
 
-func runSync(src, dst, natsURL string) error {
+// ctx is available for future use (graceful cancellation of long-running NATS ops).
+func runSync(_ context.Context, src, dst, natsURL string) error {
 	// Connect before allocating a job id so we never print a UUID that was never created.
 	nc, err := nats.Connect(natsURL,
 		nats.Name(app.Name+"-sync"),

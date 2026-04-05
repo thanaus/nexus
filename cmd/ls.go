@@ -8,7 +8,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -77,7 +76,6 @@ func newLsCmd() *cobra.Command {
 		Args: func(cmd *cobra.Command, args []string) error {
 			hasNats := strings.TrimSpace(natsURL) != ""
 			hasToken := strings.TrimSpace(token) != ""
-			// Cobra MarkFlagsRequiredTogether rejects a single flag; both present with an empty value still passes.
 			if hasNats != hasToken {
 				return fmt.Errorf("--nats and --token must be used together (after nexus sync)")
 			}
@@ -94,12 +92,14 @@ func newLsCmd() *cobra.Command {
 			}
 			return nil
 		},
-		RunE: func(_ *cobra.Command, args []string) error {
+		// cmd is no longer ignored: we forward cmd.Context() so the signal-aware
+		// context installed by setupRootCommand propagates into runLs.
+		RunE: func(cmd *cobra.Command, args []string) error {
 			var dir string
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			return runLs(dir, parquetOut, natsURL, token, workers, all)
+			return runLs(cmd.Context(), dir, parquetOut, natsURL, token, workers, all)
 		},
 		Example: fmt.Sprintf(`  # Scan directory (path and type only)
   %s ls /var/data
@@ -128,7 +128,10 @@ func newLsCmd() *cobra.Command {
 	return cmd
 }
 
-func runLs(dirArg, parquetOut, natsURL, token string, workers int, all bool) error {
+// runLs now receives ctx from cmd.Context() — the signal-aware context
+// installed by PersistentPreRunE in setupRootCommand — instead of creating
+// its own via signal.NotifyContext.
+func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, workers int, all bool) error {
 	token = strings.TrimSpace(token)
 	natsURL = strings.TrimSpace(natsURL)
 	jobNatsMode := token != ""
@@ -197,10 +200,6 @@ func runLs(dirArg, parquetOut, natsURL, token string, workers int, all bool) err
 		return fmt.Errorf("abs path: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	signalCtx := ctx
-
 	start := time.Now()
 
 	var objectCount, totalSize atomic.Int64
@@ -263,7 +262,6 @@ func runLs(dirArg, parquetOut, natsURL, token string, workers int, all bool) err
 		})
 	} else if jobNatsMode {
 		results = make(chan FileRecord, workers*4)
-		// nc, js, workSubject captured from outer scope (stream already exists from nexus sync).
 		g.Go(func() error {
 			for rec := range results {
 				data, err := json.Marshal(rec)
@@ -355,7 +353,6 @@ func runLs(dirArg, parquetOut, natsURL, token string, workers int, all bool) err
 					if all {
 						info, err := os.Lstat(fe.path)
 						if err != nil {
-							// disappeared between readdir and stat
 							continue
 						}
 						st := info.Sys().(*syscall.Stat_t)
@@ -418,7 +415,7 @@ func runLs(dirArg, parquetOut, natsURL, token string, workers int, all bool) err
 	}
 	close(scanDone)
 
-	if jobNatsMode && signalCtx.Err() == nil && waitErr == nil {
+	if jobNatsMode && ctx.Err() == nil && waitErr == nil {
 		if _, err := kv.Put(kvKeyLsDone, []byte("true")); err != nil {
 			return fmt.Errorf("broker %q: cannot notify job %q that listing finished: %w", natsURL, token, err)
 		}
@@ -426,7 +423,7 @@ func runLs(dirArg, parquetOut, natsURL, token string, workers int, all bool) err
 	}
 
 	fmt.Fprintf(os.Stderr, "\r\033[K")
-	if signalCtx.Err() != nil {
+	if ctx.Err() != nil {
 		fmt.Printf("⚠ Scan interrupted\n\n")
 	} else {
 		fmt.Printf("✔ Scan completed\n\n")
