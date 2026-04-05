@@ -44,13 +44,26 @@ func NewRootCmd() *cobra.Command {
 
 // setupRootCommand centralises all Cobra configuration: groups, help command,
 // and cross-cutting initialisation hooks. Mirrors the pattern used by rclone.
+//
+// initConfig is wired via PersistentPreRunE rather than cobra.OnInitialize:
+// OnInitialize appends to a package-level global (cobra.initializers) that is
+// never reset, so repeated calls to NewRootCmd() — e.g. in parallel tests —
+// would accumulate duplicate initialisers. PersistentPreRunE is stored on the
+// Command instance itself and is therefore fully isolated per call.
+//
+// Note: Cobra does not chain PersistentPreRunE across parent/child by default
+// (EnableTraverseRunHooks is false). Sub-commands that need their own
+// PersistentPreRunE must call initConfig() explicitly, or EnableTraverseRunHooks
+// must be set to true before NewRootCmd() is called.
 func setupRootCommand(root *cobra.Command) {
 	root.AddGroup(
 		&cobra.Group{ID: groupCore, Title: "Core Commands:"},
 		&cobra.Group{ID: groupOther, Title: "Other Commands:"},
 	)
 	root.SetHelpCommand(newHelpCmd(root))
-	cobra.OnInitialize(initConfig)
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		return initConfig()
+	}
 }
 
 // newHelpCmd returns the custom help command. It receives root as a parameter
@@ -77,8 +90,9 @@ func newHelpCmd(root *cobra.Command) *cobra.Command {
 	}
 }
 
-// initConfig is called by Cobra before any command runs (via OnInitialize).
-// Place cross-cutting initialisation here: logging, config file loading, etc.
-func initConfig() {
-	// Reserved for future use: logging setup, config file parsing, telemetry…
+// initConfig is called before every command via PersistentPreRunE on root.
+// Place cross-cutting initialisation here: logging setup, config file parsing, telemetry, etc.
+func initConfig() error {
+	// Reserved for future use.
+	return nil
 }

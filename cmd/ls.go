@@ -281,6 +281,13 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 	// When results is nil it returns immediately; otherwise it waits for all
 	// workers to finish before closing the channel so the sink goroutine above
 	// can drain cleanly.
+	//
+	// workerWg tracks worker completion for channel lifecycle only; errors flow
+	// through errgroup. The two mechanisms have non-overlapping responsibilities:
+	// the closer cannot block on g.Wait() from inside the same group (deadlock),
+	// so workerWg is the right tool here. Note that workerWg.Add(workers) is
+	// called before the launch loop — never inside each goroutine — so the count
+	// is already correct even if the closer's Wait() runs before a worker starts.
 	g.Go(func() error {
 		workerWg.Wait()
 		if results != nil {
