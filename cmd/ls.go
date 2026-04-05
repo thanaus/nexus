@@ -77,7 +77,11 @@ func newLsCmd() *cobra.Command {
 		Args: func(cmd *cobra.Command, args []string) error {
 			hasNats := strings.TrimSpace(natsURL) != ""
 			hasToken := strings.TrimSpace(token) != ""
-			jobMode := hasNats && hasToken
+			// Cobra MarkFlagsRequiredTogether rejects a single flag; both present with an empty value still passes.
+			if hasNats != hasToken {
+				return fmt.Errorf("--nats and --token must be used together (after nexus sync)")
+			}
+			jobMode := hasNats
 
 			if jobMode {
 				if len(args) > 1 {
@@ -87,18 +91,6 @@ func newLsCmd() *cobra.Command {
 			}
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 				return fmt.Errorf("requires <directory> (unless using --nats and --token)")
-			}
-			return nil
-		},
-		PreRunE: func(cmd *cobra.Command, _ []string) error {
-			hasParquet := parquetOut != ""
-			hasNats := strings.TrimSpace(natsURL) != ""
-			hasToken := strings.TrimSpace(token) != ""
-			if hasParquet && (hasNats || hasToken) {
-				return fmt.Errorf("flags -p/--parquet cannot be used with --nats or --token")
-			}
-			if hasNats != hasToken {
-				return fmt.Errorf("--nats and --token must be used together (after nexus sync)")
 			}
 			return nil
 		},
@@ -128,6 +120,10 @@ func newLsCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&token, "token", "t", "", "job id printed by nexus sync (stdout)")
 	cmd.Flags().IntVarP(&workers, "workers", "w", runtime.NumCPU()*2, "number of parallel goroutines")
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "retrieve size and additional metadata (size, mode, mtime, ctime, inode)")
+
+	cmd.MarkFlagsRequiredTogether("nats", "token")
+	cmd.MarkFlagsMutuallyExclusive("parquet", "nats")
+	cmd.MarkFlagsMutuallyExclusive("parquet", "token")
 
 	return cmd
 }
