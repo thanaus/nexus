@@ -15,22 +15,31 @@ const (
 	groupOther = "other"
 )
 
-// RootCmd is the root Cobra command for the CLI. Subcommands register via init()
-// in their own files (ls.go, sync.go, …).
-var RootCmd = &cobra.Command{
-	Use:   app.Name,
-	Short: app.DisplayName + " — Your data, perfectly in sync, everywhere.",
-	CompletionOptions: cobra.CompletionOptions{
-		DisableDefaultCmd: true,
-	},
-	// No Run: root is not Runnable, so usage omits "nexus [flags]" and plain `nexus` still shows help
-	// (cobra returns flag.ErrHelp when the matched command has no Run).
+// Execute is the entry point called by main. It creates a signal-aware context
+// cancelled on SIGINT, passes it to the root command via ExecuteContext, and
+// ensures the signal handler is released via defer — regardless of whether the
+// command succeeds, fails, or is interrupted. Cobra propagates the context to
+// every subcommand automatically (cmd.ctx == nil → cmd.ctx = parent.ctx).
+func Execute() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return NewRootCmd().ExecuteContext(ctx)
 }
 
-// Execute runs the root command (entry point for main).
-func Execute() error {
-	setupRootCommand(RootCmd)
-	return RootCmd.Execute()
+// NewRootCmd builds and returns a fresh root command with all subcommands
+// attached. Returning a new instance on each call avoids shared global state,
+// making it safe to call from parallel tests.
+func NewRootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:   app.Name,
+		Short: app.DisplayName + " — Your data, perfectly in sync, everywhere.",
+		CompletionOptions: cobra.CompletionOptions{
+			DisableDefaultCmd: true,
+		},
+	}
+	setupRootCommand(root)
+	root.AddCommand(newLsCmd(), newSyncCmd())
+	return root
 }
 
 // setupRootCommand centralises all Cobra configuration: groups, help command,
@@ -40,40 +49,24 @@ func setupRootCommand(root *cobra.Command) {
 		&cobra.Group{ID: groupCore, Title: "Core Commands:"},
 		&cobra.Group{ID: groupOther, Title: "Other Commands:"},
 	)
-	root.SetHelpCommand(newHelpCmd())
-
-	// PersistentPreRunE installs a signal-aware context on every command so
-	// that RunE functions receive it via cmd.Context() instead of creating
-	// their own. This is the idiomatic Cobra approach since v1.5.
-	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		cmd.SetContext(ctx)
-		// stop is called when the context is cancelled (signal received) or
-		// when the command finishes — whichever comes first.
-		go func() {
-			<-ctx.Done()
-			stop()
-		}()
-		return nil
-	}
-
+	root.SetHelpCommand(newHelpCmd(root))
 	cobra.OnInitialize(initConfig)
 }
 
-// newHelpCmd returns the custom help command registered via SetHelpCommand.
-// It is defined here alongside setupRootCommand to keep all Cobra wiring in one place.
-func newHelpCmd() *cobra.Command {
+// newHelpCmd returns the custom help command. It receives root as a parameter
+// so it can delegate help rendering without relying on a package-level variable.
+func newHelpCmd(root *cobra.Command) *cobra.Command {
 	return &cobra.Command{
 		Use:     "help [command]",
 		Short:   "Show help for a command",
 		GroupID: groupOther,
 		RunE: func(c *cobra.Command, args []string) error {
-			RootCmd.SetOut(c.OutOrStdout())
-			RootCmd.SetErr(c.ErrOrStderr())
+			root.SetOut(c.OutOrStdout())
+			root.SetErr(c.ErrOrStderr())
 			if len(args) == 0 {
-				return RootCmd.Help()
+				return root.Help()
 			}
-			child, _, err := RootCmd.Find(args)
+			child, _, err := root.Find(args)
 			if err != nil {
 				return err
 			}

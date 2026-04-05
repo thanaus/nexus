@@ -58,10 +58,6 @@ type FileEntry struct {
 	fileType uint8
 }
 
-func init() {
-	RootCmd.AddCommand(newLsCmd())
-}
-
 func newLsCmd() *cobra.Command {
 	var parquetOut, natsURL, token string
 	var workers int
@@ -92,14 +88,12 @@ func newLsCmd() *cobra.Command {
 			}
 			return nil
 		},
-		// cmd is no longer ignored: we forward cmd.Context() so the signal-aware
-		// context installed by setupRootCommand propagates into runLs.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var dir string
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			return runLs(cmd.Context(), dir, parquetOut, natsURL, token, workers, all)
+			return runLs(cmd.Context(), dir, parquetOut, natsURL, token, workers, all, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 		Example: fmt.Sprintf(`  # Scan directory (path and type only)
   %s ls /var/data
@@ -128,10 +122,10 @@ func newLsCmd() *cobra.Command {
 	return cmd
 }
 
-// runLs now receives ctx from cmd.Context() — the signal-aware context
-// installed by PersistentPreRunE in setupRootCommand — instead of creating
-// its own via signal.NotifyContext.
-func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, workers int, all bool) error {
+// runLs receives ctx from cmd.Context() — the signal-aware context propagated
+// by ExecuteContext — and writes human output to out/errOut so callers (tests
+// included) can inject any io.Writer instead of relying on os.Stdout/os.Stderr.
+func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, workers int, all bool, out, errOut io.Writer) error {
 	token = strings.TrimSpace(token)
 	natsURL = strings.TrimSpace(natsURL)
 	jobNatsMode := token != ""
@@ -317,7 +311,7 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 				cpuPct,
 				format.HumanSI(osutil.RSS()),
 			)
-			fmt.Fprint(os.Stderr, line)
+			fmt.Fprint(errOut, line)
 		}
 		printProgress(start, 0, 0)
 		ticker := time.NewTicker(progressInterval)
@@ -433,20 +427,20 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 		if _, err := kv.Put(kvKeyLsDone, []byte("true")); err != nil {
 			return fmt.Errorf("broker %q: cannot notify job %q that listing finished: %w", natsURL, token, err)
 		}
-		fmt.Fprintf(os.Stderr, "  ✔ Workers notified: file listing is complete\n")
+		fmt.Fprintf(errOut, "  ✔ Workers notified: file listing is complete\n")
 	}
 
-	fmt.Fprintf(os.Stderr, "\r\033[K")
+	fmt.Fprintf(errOut, "\r\033[K")
 	if ctx.Err() != nil {
-		fmt.Printf("⚠ Scan interrupted\n\n")
+		fmt.Fprintf(out, "⚠ Scan interrupted\n\n")
 	} else {
-		fmt.Printf("✔ Scan completed\n\n")
+		fmt.Fprintf(out, "✔ Scan completed\n\n")
 	}
-	fmt.Printf("  Objects scanned : %s\n", format.HumanSI(objectCount.Load()))
+	fmt.Fprintf(out, "  Objects scanned : %s\n", format.HumanSI(objectCount.Load()))
 	if all {
-		fmt.Printf("  Total size    : %s\n", format.ByteSize(totalSize.Load()))
+		fmt.Fprintf(out, "  Total size    : %s\n", format.ByteSize(totalSize.Load()))
 	}
-	fmt.Printf("  Duration      : %s\n", time.Since(start).Round(time.Millisecond))
+	fmt.Fprintf(out, "  Duration      : %s\n", time.Since(start).Round(time.Millisecond))
 
 	return nil
 }

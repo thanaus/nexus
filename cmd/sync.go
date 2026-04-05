@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"time"
 
@@ -36,10 +36,6 @@ type SyncConfig struct {
 	StatsSubject string    `json:"stats_subject"`
 }
 
-func init() {
-	RootCmd.AddCommand(newSyncCmd())
-}
-
 func newSyncCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "sync <source> <destination> <nats>",
@@ -54,10 +50,8 @@ func newSyncCmd() *cobra.Command {
 			}
 			return nil
 		},
-		// cmd is no longer ignored: we forward cmd.Context() so the signal-aware
-		// context installed by setupRootCommand propagates into runSync.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSync(cmd.Context(), args[0], args[1], strings.TrimSpace(args[2]))
+			return runSync(cmd.Context(), args[0], args[1], strings.TrimSpace(args[2]), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 		Example: fmt.Sprintf(`  # Initialise a default synchronization job
   %s sync /path/to/source /path/to/destination nats://localhost:4222`,
@@ -67,8 +61,16 @@ func newSyncCmd() *cobra.Command {
 	return cmd
 }
 
-// ctx is available for future use (graceful cancellation of long-running NATS ops).
-func runSync(_ context.Context, src, dst, natsURL string) error {
+// runSync initialises the NATS infrastructure for a sync job. ctx is the
+// signal-aware context propagated by ExecuteContext; each major operation is
+// guarded by a ctx.Err() check so that a SIGINT interrupts the setup cleanly.
+// Human-readable output goes to errOut; the bare job ID goes to out so that
+// callers can capture it with a pipe (e.g. TOKEN=$(nexus sync …)).
+func runSync(ctx context.Context, src, dst, natsURL string, out, errOut io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Connect before allocating a job id so we never print a UUID that was never created.
 	nc, err := nats.Connect(natsURL,
 		nats.Name(app.Name+"-sync"),
@@ -81,6 +83,10 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 	}
 	defer nc.Drain()
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	js, err := nc.JetStream()
 	if err != nil {
 		return fmt.Errorf("broker %q: JetStream client unavailable: %w", natsURL, err)
@@ -90,6 +96,10 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 		return fmt.Errorf("broker %q: JetStream is not enabled or not reachable for this account (enable jetstream in nats-server.conf): %w", natsURL, err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	jobID := uuid.New().String()
 	workStream := jobID + "-work"
 	statsStream := jobID + "-stats"
@@ -97,13 +107,13 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 	statsSubject := jobID + ".statistics"
 
 	const labelCol = 10
-	fmt.Fprintf(os.Stderr, "%-*s %s\n", labelCol, "Job", jobID)
-	fmt.Fprintf(os.Stderr, "%-*s %s\n", labelCol, "Source", src)
-	fmt.Fprintf(os.Stderr, "%-*s %s\n", labelCol, "Target", dst)
-	fmt.Fprintf(os.Stderr, "%-*s %s\n", labelCol, "Broker", natsURL)
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "Initializing NATS infrastructure...")
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(errOut, "%-*s %s\n", labelCol, "Job", jobID)
+	fmt.Fprintf(errOut, "%-*s %s\n", labelCol, "Source", src)
+	fmt.Fprintf(errOut, "%-*s %s\n", labelCol, "Target", dst)
+	fmt.Fprintf(errOut, "%-*s %s\n", labelCol, "Broker", natsURL)
+	fmt.Fprintln(errOut)
+	fmt.Fprintln(errOut, "Initializing NATS infrastructure...")
+	fmt.Fprintln(errOut)
 
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{
 		Bucket:      jobID,
@@ -114,7 +124,11 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 	if err != nil {
 		return fmt.Errorf("broker %q: cannot create job storage (NATS Server 2.6.2+ with JetStream required): %w", natsURL, err)
 	}
-	fmt.Fprintf(os.Stderr, "✔ %s\n", "Job storage ready")
+	fmt.Fprintf(errOut, "✔ %s\n", "Job storage ready")
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := createStreamIfNotExists(js, &nats.StreamConfig{
 		Name:        workStream,
@@ -128,7 +142,11 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 	}); err != nil {
 		return fmt.Errorf("broker %q: create work stream: %w", natsURL, err)
 	}
-	fmt.Fprintf(os.Stderr, "✔ %s\n", "Work stream ready")
+	fmt.Fprintf(errOut, "✔ %s\n", "Work stream ready")
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := createStreamIfNotExists(js, &nats.StreamConfig{
 		Name:        statsStream,
@@ -140,7 +158,11 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 	}); err != nil {
 		return fmt.Errorf("broker %q: create stats stream: %w", natsURL, err)
 	}
-	fmt.Fprintf(os.Stderr, "✔ %s\n", "Stats stream ready")
+	fmt.Fprintf(errOut, "✔ %s\n", "Stats stream ready")
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	cfg := SyncConfig{
 		JobID:        jobID,
@@ -159,25 +181,25 @@ func runSync(_ context.Context, src, dst, natsURL string) error {
 	if _, err := kv.Put(kvKeyConfig, data); err != nil {
 		return fmt.Errorf("broker %q: cannot save job settings: %w", natsURL, err)
 	}
-	fmt.Fprintf(os.Stderr, "✔ %s\n", "Configuration published")
+	fmt.Fprintf(errOut, "✔ %s\n", "Configuration published")
 
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "✓ Ready to sync")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "Next steps:")
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  Run workers:")
-	fmt.Fprintf(os.Stderr, "    %s worker --token %s\n", app.Name, jobID)
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  Monitor progress:")
-	fmt.Fprintf(os.Stderr, "    %s status --token %s\n", app.Name, jobID)
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "  List files:")
-	fmt.Fprintf(os.Stderr, "    %s ls --nats %q --token %s\n", app.Name, natsURL, jobID)
-	fmt.Fprintf(os.Stderr, "    # optional: %s ls <dir> --nats %q --token %s  (override sync source)\n", app.Name, natsURL, jobID)
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(errOut)
+	fmt.Fprintln(errOut, "✓ Ready to sync")
+	fmt.Fprintln(errOut)
+	fmt.Fprintln(errOut, "Next steps:")
+	fmt.Fprintln(errOut)
+	fmt.Fprintln(errOut, "  Run workers:")
+	fmt.Fprintf(errOut, "    %s worker --token %s\n", app.Name, jobID)
+	fmt.Fprintln(errOut)
+	fmt.Fprintln(errOut, "  Monitor progress:")
+	fmt.Fprintf(errOut, "    %s status --token %s\n", app.Name, jobID)
+	fmt.Fprintln(errOut)
+	fmt.Fprintln(errOut, "  List files:")
+	fmt.Fprintf(errOut, "    %s ls --nats %q --token %s\n", app.Name, natsURL, jobID)
+	fmt.Fprintf(errOut, "    # optional: %s ls <dir> --nats %q --token %s  (override sync source)\n", app.Name, natsURL, jobID)
+	fmt.Fprintln(errOut)
 
-	fmt.Println(jobID)
+	fmt.Fprintln(out, jobID)
 	return nil
 }
 
