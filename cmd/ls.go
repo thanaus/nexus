@@ -85,6 +85,7 @@ func newLsCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			var dir string
 			if len(args) > 0 {
 				dir = args[0]

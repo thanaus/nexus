@@ -51,6 +51,7 @@ func newSyncCmd() *cobra.Command {
 			},
 		),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			return runSync(cmd.Context(), args[0], args[1], strings.TrimSpace(args[2]), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 		Example: fmt.Sprintf(`  # Initialise a default synchronization job

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/signal"
 
@@ -29,25 +28,20 @@ func init() {
 // Execute is the entry point called by main. It creates a signal-aware context
 // cancelled on SIGINT, passes it to the root command via ExecuteContext, and
 // ensures the signal handler is released via defer — regardless of whether the
-// command succeeds, fails, or is interrupted. Cobra propagates the context to
-// every subcommand automatically (cmd.ctx == nil → cmd.ctx = parent.ctx).
+// command succeeds, fails, or is interrupted.
 //
-// SilenceErrors and SilenceUsage are set on root so that:
-//   - runtime errors (e.g. NATS connection failure) do not trigger a spurious
-//     usage dump — usage is only relevant for mis-typed commands, not runtime failures;
-//   - the application, not Cobra, controls when and how the error is displayed.
+// Error printing strategy — Cobra owns all error output:
+//   - Arg/flag validation errors: Cobra prints "Error: ..." then the usage block.
+//   - Runtime errors (from RunE): each RunE sets cmd.SilenceUsage = true so
+//     Cobra prints "Error: ..." without the usage block.
 //
-// The error is printed here via root.ErrOrStderr() to stay consistent with the
-// injectable writer pattern used across all commands.
+// SilenceErrors is not set (defaults to false) so Cobra always prints the error.
+// We do not reprint it here to avoid double output.
 func Execute() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	root := NewRootCmd()
-	if err := root.ExecuteContext(ctx); err != nil {
-		fmt.Fprintln(root.ErrOrStderr(), err)
-		return err
-	}
-	return nil
+	return root.ExecuteContext(ctx)
 }
 
 // NewRootCmd builds and returns a fresh root command with all subcommands
@@ -67,24 +61,18 @@ func NewRootCmd() *cobra.Command {
 }
 
 // setupRootCommand centralises all Cobra configuration: groups, help command,
-// and cross-cutting initialisation hooks. Mirrors the pattern used by rclone.
+// and cross-cutting initialisation hooks.
 //
-// initConfig is wired via PersistentPreRunE rather than cobra.OnInitialize:
-// OnInitialize appends to a package-level global (cobra.initializers) that is
-// never reset, so repeated calls to NewRootCmd() — e.g. in parallel tests —
-// would accumulate duplicate initialisers. PersistentPreRunE is stored on the
-// Command instance itself and is therefore fully isolated per call.
+// SilenceErrors is not set: Cobra prints "Error: ..." for every failure.
+// SilenceUsage  is intentionally NOT set here: each RunE sets it to true at
+// its very first line so that:
+//   - arg/flag validation errors (Args runs before RunE) still print usage;
+//   - runtime errors inside RunE (e.g. NATS failure) do not.
 func setupRootCommand(root *cobra.Command) {
-	root.SilenceErrors = true
-	root.SilenceUsage = true
 	root.AddGroup(
 		&cobra.Group{ID: groupCore, Title: "Core Commands:"},
 		&cobra.Group{ID: groupOther, Title: "Other Commands:"},
 	)
-	// SetHelpCommandGroupID places the auto-generated help command in the
-	// "Other Commands:" section. No custom help command is needed: Cobra's
-	// default already handles sub-command lookup and writer propagation via
-	// the parent chain (OutOrStdout walks up to root automatically).
 	root.SetHelpCommandGroupID(groupOther)
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		return initConfig()
