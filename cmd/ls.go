@@ -195,6 +195,13 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 	var objectCount, totalSize atomic.Int64
 
 	jobs := make(chan FileEntry, workers*4)
+	// scanCtx retains the original signal-aware context. errgroup.WithContext
+	// cancels its derived context as soon as g.Wait() returns — even on success —
+	// so checking ctx.Err() after Wait() would always be non-nil and would
+	// incorrectly report "scan interrupted" on every normal completion.
+	// scanCtx is only cancelled by a real SIGINT, making it the right signal
+	// to distinguish a user-interrupted run from a clean finish.
+	scanCtx := ctx
 	g, ctx := errgroup.WithContext(ctx)
 
 	// results is non-nil only when output is needed (parquet or NATS).
@@ -426,7 +433,7 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 		return waitErr
 	}
 
-	if jobNatsMode && ctx.Err() == nil && waitErr == nil {
+	if jobNatsMode && scanCtx.Err() == nil && waitErr == nil {
 		if _, err := kv.Put(kvKeyLsDone, []byte("true")); err != nil {
 			return fmt.Errorf("broker %q: cannot notify job %q that listing finished: %w", natsURL, token, err)
 		}
@@ -434,7 +441,7 @@ func runLs(ctx context.Context, dirArg, parquetOut, natsURL, token string, worke
 	}
 
 	fmt.Fprintf(errOut, "\r\033[K")
-	if ctx.Err() != nil {
+	if scanCtx.Err() != nil {
 		fmt.Fprintf(out, "⚠ Scan interrupted\n\n")
 	} else {
 		fmt.Fprintf(out, "✔ Scan completed\n\n")
